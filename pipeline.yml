@@ -1,0 +1,97 @@
+---
+resource_types:
+- name: email
+  type: docker-image
+  source:
+    repository: pcfseceng/email-resource
+    tag: latest
+- name: telegram-notification
+  type: docker-image
+  source:
+    repository: w32blaster/concourse-telegram-notifier
+- name: cron-resource
+  type: docker-image
+  source:
+    repository: cftoolsmiths/cron-resource
+
+resources:
+- name: someorg-pipelines
+  type: git
+  source:
+    uri: ssh://git@git.someorg.nl:7999/someuser/someorg-pipelines.git
+    branch: master
+    private_key:  {{git_private_key}}
+- name: pcf-platform
+  type: git
+  source:
+    uri: ssh://git@git.someorg.nl:7999/someuser/pcf-platform.git
+    branch: master
+    private_key:  {{git_private_key}}
+- name: mail2someuser
+  type: email
+  source:
+    smtp:
+      host: smtprelay.eu.somenet.com
+      port: "25"
+      anonymous: true
+    from: {{email_from}}
+    to:
+    - {{email_to}}
+- name: mail-report
+  type: email
+  source:
+    smtp:
+      host: smtprelay.eu.somenet.com
+      port: "25"
+      anonymous: true
+    from: {{email_from}}
+    to:
+    - {{email-report_to1}}
+    - {{email-report_to2}}
+    - {{email-report_to3}}
+    - {{email-report_to4}}
+- name: first-day-of-month
+  type: cron-resource
+  source:
+    location: Europe/Amsterdam
+    expression: "0 6 1 * *"
+- name: telegram
+  type: telegram-notification
+  source:
+    bot_token: {{telegram_bot_token}}
+
+jobs:
+- name: generate
+  serial: true
+  public: false
+  build_logs_to_retain: 5000
+  plan:
+  - get: first-day-of-month
+    trigger: true
+  - get: someorg-pipelines
+    resource: someorg-pipelines
+  - get: pcf-platform
+    resource: pcf-platform
+  - task: generate
+    file: someorg-pipelines/pcf-usage-report/tasks/generate/task.yml
+    params:
+      PCFENV: {{pcfenv}}
+      USER: {{user}}
+      PASSWORD: {{password}}
+      ORG: {{org}}
+      SPACE: {{space}}
+  - put: mail-report
+    params:
+      subject: out/app_service_usages-subject.txt
+      body: out/app_service_usages.json
+      headers: out/headers
+    on_failure:
+      do:
+      - put: mail2someuser
+        params:
+          subject_text: "failed to generate the pcf-usage-report: ${BUILD_PIPELINE_NAME}/${BUILD_JOB_NAME}/${BUILD_NAME}"
+          body_text: "failed to generate the pcf-usage-report: ${ATC_EXTERNAL_URL}/teams/main/pipelines/${BUILD_PIPELINE_NAME}/jobs/${BUILD_JOB_NAME}/builds/${BUILD_NAME}"
+      - put: telegram
+        params:
+          chat_id: {{telegram_chat_id}}
+          text: "${BUILD_JOB_NAME} | [failed to generate the pcf-usage-report](${ATC_EXTERNAL_URL}/teams/main/pipelines/${BUILD_PIPELINE_NAME}/jobs/${BUILD_JOB_NAME}/builds/${BUILD_NAME})"
